@@ -71,7 +71,7 @@ Create a `.env` file inside the `backend/` directory:
 
 ```env
 DB_SERVER="<YOUR_AZURE_SQL_CONNECTION_STRING_URI.database.windows.net>"
-DB_DATABASE="banking_app"
+DB_DATABASE="zava_ar_system"
 DB_DRIVER="ODBC Driver 18 for SQL Server"
 
 AZURE_CLIENT_ID="<YOUR_AZURE_CLIENT_ID>"
