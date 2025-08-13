@@ -62,7 +62,7 @@ You can execute this script against your Azure SQL Database using tools like VS 
 
 ```bash
 cd backend
-python3 -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate  # Or .\venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
