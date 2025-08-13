@@ -54,7 +54,7 @@ cd Banking_App_SQL
 
 a. Create a database called ##zava_ar_system##.
 
-b. The schema.sql file in the **backend** repository contains all the necessary T-SQL commands to create the required tables (vendors, invoices, payments, vendor_requests) and populate them with sample data.
+b. The schema.sql and vendor_seed_data_inserts.sql files in the **backend** repository contains all the necessary T-SQL commands to create the required tables (vendors, invoices, payments, vendor_requests) and populate them with sample data.
 
 You can execute this script against your Azure SQL Database using tools like VS Code Extension, SSMS, SQL Editor in Azure Portal or the sqlcmd command-line utility.
 
