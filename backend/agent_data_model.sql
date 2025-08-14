@@ -22,7 +22,7 @@ CREATE TABLE chat_history (
     
     -- LangChain specific fields
     additional_kwargs NVARCHAR(MAX) DEFAULT '{}', -- JSON data for LangChain message kwargs
-    response_metadata NVARCHAR(MAX) DEFAULT '{}', -- JSON data for AI response metadata
+    response_md NVARCHAR(MAX) DEFAULT '{}', -- JSON data for AI response metadata
     
     -- Tool usage fields (embedded in message)
     tool_call_id NVARCHAR(255),
