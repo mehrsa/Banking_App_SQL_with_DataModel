@@ -3,6 +3,7 @@ import urllib.parse
 import uuid
 from datetime import datetime
 import json
+import time
 from dateutil.relativedelta import relativedelta
 import numpy as np
 
@@ -133,7 +134,178 @@ class Transaction(db.Model):
     def to_dict(self):
         return to_dict_helper(self)
 
-# --- AI Chatbot Tool Definitions ---
+# Chat History and Tool Usage Models (V1)
+class ChatHistory(db.Model):
+    __tablename__ = 'chat_history'
+    id = db.Column(db.String(255), primary_key=True, default=lambda: f"msg_{uuid.uuid4()}")
+    session_id = db.Column(db.String(255), nullable=False)
+    user_id = db.Column(db.String(255), db.ForeignKey('users.id'), nullable=False)
+    message_type = db.Column(db.String(50), nullable=False)  # 'human', 'ai', 'system', 'tool_call', 'tool_result'
+    content = db.Column(db.Text)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # LangChain specific fields
+    additional_kwargs = db.Column(db.JSON, default=lambda: {})
+    response_md = db.Column(db.JSON, default=lambda: {})
+    
+    # Tool usage fields
+    tool_call_id = db.Column(db.String(255))
+    tool_name = db.Column(db.String(255))
+    tool_input = db.Column(db.JSON)
+    tool_output = db.Column(db.JSON)
+    tool_error = db.Column(db.Text)
+    tool_execution_time_ms = db.Column(db.Integer)
+
+    def to_dict(self):
+        return to_dict_helper(self)
+
+class ChatSession(db.Model):
+    __tablename__ = 'chat_sessions'
+    session_id = db.Column(db.String(255), primary_key=True, default=lambda: f"session_{uuid.uuid4()}")
+    user_id = db.Column(db.String(255), db.ForeignKey('users.id'), nullable=False)
+    title = db.Column(db.String(500))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return to_dict_helper(self)
+
+class ToolUsage(db.Model):
+    __tablename__ = 'tool_usage'
+    id = db.Column(db.String(255), primary_key=True, default=lambda: f"tool_{uuid.uuid4()}")
+    session_id = db.Column(db.String(255), nullable=False)
+    user_id = db.Column(db.String(255), db.ForeignKey('users.id'), nullable=False)
+    message_id = db.Column(db.String(255), db.ForeignKey('chat_history.id'))
+    tool_call_id = db.Column(db.String(255), nullable=False)
+    tool_name = db.Column(db.String(255), nullable=False)
+    tool_input = db.Column(db.JSON, nullable=False)
+    tool_output = db.Column(db.JSON)
+    tool_error = db.Column(db.Text)
+    execution_time_ms = db.Column(db.Integer)
+    status = db.Column(db.String(50), default='pending')  # 'pending', 'success', 'error', 'timeout'
+    started_at = db.Column(db.DateTime, default=datetime.utcnow)
+    completed_at = db.Column(db.DateTime)
+
+    
+    # Additional tracking fields
+    cost_cents = db.Column(db.Integer)  # For paid APIs
+    tokens_used = db.Column(db.Integer)
+    rate_limit_hit = db.Column(db.Boolean, default=False)
+    retry_count = db.Column(db.Integer, default=0)
+
+    def to_dict(self):
+        return to_dict_helper(self)
+
+class ToolDefinition(db.Model):
+    __tablename__ = 'tool_definitions'
+    id = db.Column(db.String(255), primary_key=True, default=lambda: f"tooldef_{uuid.uuid4()}")
+    name = db.Column(db.String(255), unique=True, nullable=False)
+    description = db.Column(db.Text)
+    input_schema = db.Column(db.JSON, nullable=False)
+    version = db.Column(db.String(50), default='1.0.0')
+    is_active = db.Column(db.Boolean, default=True)
+    cost_per_call_cents = db.Column(db.Integer, default=0)
+    average_execution_time_ms = db.Column(db.Integer)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return to_dict_helper(self)
+
+# --- Chat History Management Class ---
+class ChatHistoryManager:
+    def __init__(self, session_id: str, user_id: str = 'user_1'):
+        self.session_id = session_id
+        self.user_id = user_id
+        self._ensure_session_exists()
+
+    def _ensure_session_exists(self):
+        """Ensure the chat session exists in the database"""
+        session = ChatSession.query.filter_by(session_id=self.session_id).first()
+        if not session:
+            session = ChatSession(
+                session_id=self.session_id,
+                user_id=self.user_id,
+                title="New Chat Session"
+            )
+            print("-----------------> New chat session created: ", session.session_id)
+            db.session.add(session)
+            db.session.commit()
+
+    def add_message(self, message_type: str, content: str, **kwargs):
+        """Add a message to the chat history"""
+        message = ChatHistory(
+            session_id=self.session_id,
+            user_id=self.user_id,
+            message_type=message_type,
+            content=content,
+            **kwargs
+        )
+        db.session.add(message)
+        db.session.commit()
+        return message
+
+    def add_tool_call(self, tool_call_id: str, tool_name: str, tool_input: dict, content: str = None):
+        """Log a tool call"""
+        content = content or f"Calling tool: {tool_name}"
+        print(f"Adding tool call: {tool_name} with ID: {tool_call_id}")
+        return self.add_message(
+            message_type='tool_call',
+            content=content,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            tool_input=tool_input
+        )
+
+    def add_tool_result(self, tool_call_id: str, tool_name: str, tool_output: dict, 
+                       content: str = None, error: str = None, execution_time_ms: int = None):
+        """Log a tool result"""
+        content = content or f"Tool {tool_name} result"
+        return self.add_message(
+            message_type='tool_result',
+            content=content,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            tool_output=tool_output,
+            tool_error=error,
+            tool_execution_time_ms=execution_time_ms
+        )
+
+    def log_tool_usage(self, tool_call_id: str, tool_name: str, tool_input: dict, 
+                      tool_output: dict = None, error: str = None, execution_time_ms: int = None, 
+                      message_id: str = None, tokens_used: int = None):
+        """Log detailed tool usage metrics"""
+        status = 'error' if error else 'success'
+        
+        tool_usage = ToolUsage(
+            session_id=self.session_id,
+            user_id=self.user_id,
+            message_id=message_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_output=tool_output,
+            tool_error=error,
+            execution_time_ms=execution_time_ms,
+            status=status,
+            completed_at=datetime.utcnow(),
+            tokens_used=tokens_used
+        )
+        db.session.add(tool_usage)
+        db.session.commit()
+        return tool_usage
+
+    def get_conversation_history(self, limit: int = 50):
+        """Retrieve conversation history for this session"""
+        messages = ChatHistory.query.filter_by(
+            session_id=self.session_id
+        ).order_by(ChatHistory.timestamp.desc()).limit(limit).all()
+        
+        return [msg.to_dict() for msg in reversed(messages)]
+
+# --- AI Chatbot Tool Definitions (Enhanced with logging) ---
 
 def get_user_accounts(user_id='user_1'):
     """Retrieves all accounts for a given user."""
@@ -196,16 +368,12 @@ def search_support_documents(user_question: str):
     if not vector_store:
         return "The vector store is not configured."
     try:
-        # Use the vector store to find similar documents
         results = vector_store.similarity_search_with_score(user_question, k=3)
-        
-        # Filter results by a relevance threshold
         relevant_docs = [doc.page_content for doc, score in results if score < 0.5]
         
         if not relevant_docs:
             return "No relevant support documents found to answer this question."
 
-        # Combine the content of relevant documents into a single context string
         context = "\n\n---\n\n".join(relevant_docs)
         return context
 
@@ -260,7 +428,7 @@ def transfer_money(user_id='user_1', from_account_name=None, to_account_name=Non
     except Exception as e:
         db.session.rollback()
         return f"Error during transfer: {str(e)}"
-        
+
 # --- API Routes ---
 @app.route('/api/accounts', methods=['GET', 'POST'])
 def handle_accounts():
@@ -291,13 +459,56 @@ def handle_transactions():
         status_code = 201 if result.get("status") == "success" else 400
         return jsonify(result), status_code
 
+# Chat History API Routes
+@app.route('/api/chat/sessions', methods=['GET', 'POST'])
+def handle_chat_sessions():
+    user_id = 'user_1'  # In production, get from auth
+    
+    if request.method == 'GET':
+        sessions = ChatSession.query.filter_by(user_id=user_id).order_by(ChatSession.updated_at.desc()).all()
+        return jsonify([session.to_dict() for session in sessions])
+    
+    if request.method == 'POST':
+        data = request.json
+        session = ChatSession(
+            user_id=user_id,
+            title=data.get('title', 'New Chat Session'),
+        )
+        db.session.add(session)
+        db.session.commit()
+        return jsonify(session.to_dict()), 201
+
+
+
+# Added this for now to enforce one session per app launch. 
+# It kept changing session id during the in progress chat (needs fixing)
+global_session_id = None
+
 @app.route('/api/chatbot', methods=['POST'])
 def chatbot():
+    global global_session_id
     if not ai_client:
         return jsonify({"error": "Azure OpenAI client is not configured."}), 503
 
     data = request.json
     messages = data.get("messages", [])
+    if global_session_id is not None:
+        session_id = global_session_id
+    else:
+        session_id = data.get("session_id") or f"session_{uuid.uuid4()}"
+        global_session_id = session_id
+
+    user_id = data.get("user_id", "user_1")
+    
+    # Initialize chat history manager
+    chat_manager = ChatHistoryManager(session_id, user_id)
+    
+    # Log the user's message
+    if messages and messages[-1].get("role") == "user":
+        chat_manager.add_message(
+            message_type='human',
+            content=messages[-1].get("content")
+        )
 
     tools = [
         {"type": "function", "function": {
@@ -345,10 +556,12 @@ def chatbot():
         }}
     ]
 
-    # First API call to decide if a tool should be used
     response = ai_client.chat.completions.create(model=AZURE_OPENAI_DEPLOYMENT, messages=messages, tools=tools, tool_choice="auto")
+        
+
     response_message = response.choices[0].message
     tool_calls = response_message.tool_calls
+
 
     if tool_calls:
         messages.append(response_message)
@@ -362,12 +575,55 @@ def chatbot():
 
         for tool_call in tool_calls:
             function_name = tool_call.function.name
-            function_to_call = available_functions[function_name]
             function_args = json.loads(tool_call.function.arguments)
-            function_response = function_to_call(**function_args)
             
+            # Log tool call start
+            chat_manager.add_tool_call(
+                tool_call_id=tool_call.id,
+                tool_name=function_name,
+                tool_input=function_args
+            )
+            
+            # Execute the tool
+            tool_start_time = time.time()
+            function_to_call = available_functions[function_name]
+            
+            try:
+                function_response = function_to_call(**function_args)
+                tool_execution_time = int((time.time() - tool_start_time) * 1000)
+                tool_error = None
+                tool_output = {"result": function_response}
+                
+            except Exception as e:
+                tool_execution_time = int((time.time() - tool_start_time) * 1000)
+                tool_error = str(e)
+                function_response = f"Error executing {function_name}: {str(e)}"
+                tool_output = {"error": str(e)}
+            
+            # Log tool result in chat history
+            tool_result_message = chat_manager.add_tool_result(
+                tool_call_id=tool_call.id,
+                tool_name=function_name,
+                tool_output=tool_output,
+                content=function_response[:500] + "..." if len(str(function_response)) > 500 else str(function_response),
+                error=tool_error,
+                execution_time_ms=tool_execution_time
+            )
+            
+            # Log detailed tool usage metrics
+            chat_manager.log_tool_usage(
+                tool_call_id=tool_call.id,
+                tool_name=function_name,
+                tool_input=function_args,
+                tool_output=tool_output,
+                error=tool_error,
+                execution_time_ms=tool_execution_time,
+                tokens_used=response.usage.total_tokens,
+                message_id=tool_result_message.id
+            )
+            
+            # Prepare content for LangChain message format
             tool_message_content = function_response
-            # If the tool call was for RAG, prepend the instruction to the content.
             if function_name == 'search_support_documents':
                 rag_instruction = "You are a customer support agent. Answer the user's last question based *only* on the following document context. If the context says no documents were found, inform the user you could not find an answer. Do not use your general knowledge. CONTEXT: "
                 tool_message_content = rag_instruction + function_response
@@ -380,14 +636,159 @@ def chatbot():
             })
         
         # Second API call to get a natural language response based on the tool's output
+        final_start_time = time.time()
         second_response = ai_client.chat.completions.create(model=AZURE_OPENAI_DEPLOYMENT, messages=messages)
+        final_response_time = int((time.time() - final_start_time) * 1000)
+        
         final_message = second_response.choices[0].message.content
-        return jsonify({"response": final_message})
+        
+        # Log the final AI response
+        chat_manager.add_message(
+            message_type='ai',
+            content=final_message,
+            response_md={
+                "model": AZURE_OPENAI_DEPLOYMENT,
+                "response_time_ms": final_response_time,
+                "tool_calls_made": len(tool_calls)
+            }
+        )
+        
+        return jsonify({
+            "response": final_message,
+            "session_id": session_id,
+            "tools_used": [tc.function.name for tc in tool_calls]
+        })
 
     # If no tool is called, just return the model's direct response
-    return jsonify({"response": response_message.content})
+    return jsonify({
+        "response": response_message.content,
+        "session_id": session_id,
+        "tools_used": []
+    })
+
+# Tool Management Routes
+@app.route('/api/tools/definitions', methods=['GET', 'POST'])
+def handle_tool_definitions():
+    if request.method == 'GET':
+        tools = ToolDefinition.query.filter_by(is_active=True).all()
+        return jsonify([tool.to_dict() for tool in tools])
+    
+    if request.method == 'POST':
+        data = request.json
+        tool_def = ToolDefinition(
+            name=data['name'],
+            description=data.get('description'),
+            input_schema=data['input_schema'],
+            version=data.get('version', '1.0.0'),
+            cost_per_call_cents=data.get('cost_per_call_cents', 0)
+        )
+        db.session.add(tool_def)
+        db.session.commit()
+        return jsonify(tool_def.to_dict()), 201
+
+@app.route('/api/tools/usage/<session_id>', methods=['GET'])
+def get_session_tool_usage(session_id):
+    """Get tool usage for a specific session"""
+    usage = ToolUsage.query.filter_by(session_id=session_id).order_by(ToolUsage.started_at.desc()).all()
+    return jsonify([u.to_dict() for u in usage])
+
+@app.route('/api/chat/export/<session_id>', methods=['GET'])
+def export_chat_session(session_id):
+    """Export a complete chat session with tool usage"""
+    chat_manager = ChatHistoryManager(session_id)
+    history = chat_manager.get_conversation_history(limit=1000)
+    
+    # Get tool usage for this session
+    tool_usage = ToolUsage.query.filter_by(session_id=session_id).all()
+    
+    export_data = {
+        "session_id": session_id,
+        "exported_at": datetime.utcnow().isoformat(),
+        "chat_history": history,
+        "tool_usage": [usage.to_dict() for usage in tool_usage],
+        "summary": {
+            "total_messages": len(history),
+            "total_tool_calls": len(tool_usage),
+            "unique_tools_used": len(set(usage.tool_name for usage in tool_usage)),
+            "average_tool_execution_time": np.mean([usage.execution_time_ms for usage in tool_usage if usage.execution_time_ms]) if tool_usage else 0
+        }
+    }
+    
+    return jsonify(export_data)
+
+# --- Database Initialization ---
+def initialize_tool_definitions():
+    """Initialize tool definitions in the database"""
+    tools_data = [
+        {
+            "name": "get_user_accounts",
+            "description": "Retrieves all accounts for a given user",
+            "input_schema": {"type": "object", "properties": {}},
+            "cost_per_call_cents": 0
+        },
+        {
+            "name": "get_transactions_summary",
+            "description": "Provides spending summary with time period and account filters",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "time_period": {"type": "string"},
+                    "account_name": {"type": "string"}
+                }
+            },
+            "cost_per_call_cents": 0
+        },
+        {
+            "name": "search_support_documents",
+            "description": "Searches knowledge base for customer support answers",
+            "input_schema": {
+                "type": "object",
+                "properties": {"user_question": {"type": "string"}},
+                "required": ["user_question"]
+            },
+            "cost_per_call_cents": 2  # Embedding search has slight cost (dummy value for now)
+        },
+        {
+            "name": "create_new_account",
+            "description": "Creates a new bank account for the user",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "account_type": {"type": "string", "enum": ["checking", "savings", "credit"]},
+                    "name": {"type": "string"},
+                    "balance": {"type": "number"}
+                },
+                "required": ["account_type", "name"]
+            },
+            "cost_per_call_cents": 0
+        },
+        {
+            "name": "transfer_money",
+            "description": "Transfers money between accounts or to external accounts",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "from_account_name": {"type": "string"},
+                    "to_account_name": {"type": "string"},
+                    "amount": {"type": "number"},
+                    "to_external_details": {"type": "object"}
+                },
+                "required": ["from_account_name", "amount"]
+            },
+            "cost_per_call_cents": 0
+        }
+    ]
+    
+    for tool_data in tools_data:
+        existing_tool = ToolDefinition.query.filter_by(name=tool_data["name"]).first()
+        if not existing_tool:
+            tool_def = ToolDefinition(**tool_data)
+            db.session.add(tool_def)
+    
+    db.session.commit()
 
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+        initialize_tool_definitions()
     app.run(debug=True, port=5001)
