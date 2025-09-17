@@ -7,6 +7,8 @@ from dateutil.relativedelta import relativedelta
 # from sqlalchemy import create_engine
 from sqlalchemy.pool import QueuePool
 
+from langsmith import Client
+import langsmith
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
@@ -274,6 +276,29 @@ def transfer_money(user_id: str = 'user_1', from_account_name: str = None, to_ac
     except Exception as e:
         db.session.rollback()
         return f"Error during transfer: {str(e)}"
+    
+################### LANGSMITH TRACING SETUP ################################
+LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
+LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
+LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT", "banking-app-traces")
+langsmith_client = None
+
+if LANGCHAIN_TRACING_V2 and LANGCHAIN_API_KEY:
+    try:
+        langsmith_client = Client(
+            api_url=os.getenv("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com"),
+            api_key=LANGCHAIN_API_KEY
+        )
+        print(f"✓ LangSmith tracing enabled for project: {LANGCHAIN_PROJECT}")
+    except Exception as e:
+        print(f"⚠️  LangSmith setup failed: {e}")
+        langsmith_client = None
+
+def get_langsmith_trace_url(trace_id):
+    """Generate LangSmith trace URL"""
+    base_url = "https://smith.langchain.com"
+    project_name = LANGCHAIN_PROJECT
+    return f"{base_url}/trace/{trace_id}?project={project_name}"
 
 # Banking API Routes
 @app.route('/api/accounts', methods=['GET', 'POST'])
@@ -317,6 +342,10 @@ def chatbot():
     user_id = data.get("user_id", "user_1")
     
     print(messages)
+        # Set LangSmith environment for this trace
+    trace_id = str(uuid.uuid4())
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    trace_name= f"{session_id}-{trace_id}"
 
     # Extract user message and define tools
     user_message = messages[-1].get("content", "")
@@ -337,7 +366,99 @@ def chatbot():
     )
     #--------------------------------------------------------
     trace_start_time = time.time()
-    response = banking_agent.invoke( {"messages": [{"role": "user", "content": user_message}]})
+    # Use LangSmith tracer to capture the trace ID
+    if langsmith_client:
+        # trace_id = uuid.uuid4()
+        # tracer = LangChainTracer(client=client, project_name=your_project_name)
+        with langsmith.trace(
+            name=trace_name,
+            run_type="chain",
+            inputs={"user_message": user_message, "session_id": session_id},
+            project_name=LANGCHAIN_PROJECT,
+            run_id=trace_id,
+            metadata={
+                "session_id": session_id,
+                "user_id": user_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        ) as run_context:
+            response = banking_agent.invoke({"messages": [{"role": "user", "content": user_message}]})
+
+        # Fetch complete trace details after execution
+        try:
+            # Wait a moment for the trace to be fully processed
+            time.sleep(1)
+                    # Fix the filter syntax - needs proper quoting
+            trace_runs = list(langsmith_client.list_runs(
+                project_name=LANGCHAIN_PROJECT,# Added quotes around the value
+                limit=10
+            ))
+            
+            print(f"Found {len(trace_runs)} runs for trace")
+            run_dict = []
+            for run in trace_runs:
+                print("$$$$$$$$$$$$$$$$$$$$$$$Run: ", run)
+                run_dict.append(run)
+            print("Runs Dict: ", run_dict)
+            # trace_details = {
+            #     "trace_id": trace_id,
+            #     "name": trace_run.name,clear
+            #     "run_type": trace_run.run_type,
+            #     "start_time": trace_run.start_time.isoformat() if trace_run.start_time else None,
+            #     "end_time": trace_run.end_time.isoformat() if trace_run.end_time else None,
+            #     "execution_order": trace_run.execution_order,
+            #     "status": trace_run.status,
+            #     "inputs": trace_run.inputs,
+            #     "outputs": trace_run.outputs,
+            #     "error": trace_run.error,
+            #     "metadata": trace_run.extra,
+            #     "tags": trace_run.tags,
+            #     "parent_run_id": str(trace_run.parent_run_id) if trace_run.parent_run_id else None,
+            #     "total_tokens": trace_run.total_tokens,
+            #     "prompt_tokens": trace_run.prompt_tokens,
+            #     "completion_tokens": trace_run.completion_tokens,
+            #     "total_cost": trace_run.total_cost,
+            #     "prompt_cost": trace_run.prompt_cost,
+            #     "completion_cost": trace_run.completion_cost,
+            #     "session_id": session_id,
+            #     "trace_url": get_langsmith_trace_url(trace_id)
+            # }
+            # print("1: ", trace_details)
+            
+            # # Get child runs (tool calls, etc.)
+            # child_runs = langsmith_client.list_runs(
+            #     project_name=f"banking-session-{session_id}",
+            #     filter=f'eq(parent_run_id, "{trace_id}")'
+            # )
+            
+            # trace_details["child_runs"] = []
+            # for child_run in child_runs:
+            #     child_details = {
+            #         "run_id": str(child_run.id),
+            #         "name": child_run.name,
+            #         "run_type": child_run.run_type,
+            #         "start_time": child_run.start_time.isoformat() if child_run.start_time else None,
+            #         "end_time": child_run.end_time.isoformat() if child_run.end_time else None,
+            #         "status": child_run.status,
+            #         "inputs": child_run.inputs,
+            #         "outputs": child_run.outputs,
+            #         "error": child_run.error,
+            #         "total_tokens": child_run.total_tokens,
+            #         "execution_order": child_run.execution_order
+            #     }
+            #     trace_details["child_runs"].append(child_details)
+            #     print(trace_details)
+            
+        except Exception as e:
+            print(f"Failed to fetch trace details: {e}")
+            return jsonify({
+                "response": {},
+                "session_id": session_id,
+                "tools_used": []
+            })
+            # trace_details = {"error": f"Failed to fetch trace details: {str(e)}"}
+    else:
+        response = banking_agent.invoke({"messages": [{"role": "user", "content": user_message}]})
     end_time = time.time()
     trace_duration = int((end_time - trace_start_time) * 1000)  # Convert to milliseconds
     print("################### NEW TRACE STARTS ######################")
