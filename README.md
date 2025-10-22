@@ -1,3 +1,16 @@
+
+# DEPRECATED!! Visit https://aka.ms/AgenticAppFabric for the upated work!
+
+
+
+
+
+
+
+
+
+
+
 # 🏦  AI Banking App with SQL, Flask and Typescript
 
 **AI Banking App** is an interactive web application designed to simulate a modern banking dashboard. Its primary purpose is to serve as an educational tool, demonstrating how SQL-based databases are leveraged across different types of workloads: **OLTP**, **OLAP**, and **AI-driven analysis**.
