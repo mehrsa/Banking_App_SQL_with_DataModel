@@ -1,5 +1,5 @@
 
-# DEPRECATED!! Visit https://aka.ms/AgenticAppFabric for the upated work!
+# DEPRECATED!! Visit https://aka.ms/AgenticAppFabric for the updated work!
 
 
 
